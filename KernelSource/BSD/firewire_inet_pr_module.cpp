@@ -34,7 +34,6 @@ extern "C"{
 #include <sys/socket.h>
 #include <sys/sockio.h>
 #include <sys/sysctl.h>
-#include <kern/lock.h>
 
 #include <net/dlil.h>
 #include <net/if.h>
@@ -101,12 +100,19 @@ inet_firewire_input(
     switch (fw_type) 
 	{
         case FWTYPE_IP:
-			mbuf_pullup(&m, sizeof(struct ip));
-            if (m == NULL)
-                return EJUSTRETURN;
+			{
+				mbuf_pullup(&m, sizeof(struct ip));
+				if (m == NULL)
+					return EJUSTRETURN;
+				
+				errno_t ret = proto_input(PF_INET, m);
+				
+				if( ret )
+					mbuf_freem(m);
 
-			return proto_input(PF_INET, m);
-
+				return ret;
+			}
+			
         case FWTYPE_ARP:
             firewire_arpintr(m);
 			break;
@@ -148,14 +154,14 @@ inet_firewire_pre_output(
 	char						*type,
 	char						*edst)
 {
-    struct mbuf* m = (struct mbuf*)*m0;
+    mbuf_t m = *m0;
     errno_t	result = 0;
 	    
     if ((ifnet_flags(interface) & (IFF_UP|IFF_RUNNING)) != (IFF_UP|IFF_RUNNING)) 
 		return ENETDOWN;
 	
 	// Tell firewire_frameout it's ok to loop packet unless negated below.
-    m->m_flags |= M_LOOP;
+    mbuf_setflags(m, mbuf_flags(m) | MBUF_LOOP);
 
     switch (dst_netaddr->sa_family) 
 	{
@@ -174,7 +180,7 @@ inet_firewire_pre_output(
 
         case AF_UNSPEC:
 		{
-            m->m_flags &= ~M_LOOP;
+            mbuf_setflags(m, mbuf_flags(m) & ~MBUF_LOOP);
             register struct firewire_header *fwh = (struct firewire_header *)dst_netaddr->sa_data;
 			(void)memcpy(edst, fwh->fw_dhost, FIREWIRE_ADDR_LEN);
             *(u_short *)type = fwh->fw_type;
@@ -182,9 +188,6 @@ inet_firewire_pre_output(
 		break;
 
         default:
-            log(LOG_DEBUG,"%s%d: can't handle af%d\n", ifnet_name(interface), 
-                                    ifnet_unit(interface), dst_netaddr->sa_family);
-
             return EAFNOSUPPORT;
     }
 
@@ -195,10 +198,9 @@ inet_firewire_pre_output(
 //
 //  firewire_inet_prmod_ioctl
 //
-//   IN:	u_long       dl_tag
 //   IN:	ifnet_t ifp
-//   IN:	int          command
-//   IN:	caddr_t      data
+//   IN:	unsigned long	command
+//   IN:	caddr_t			data
 // 
 // Invoked by : 
 //  Invoked by dlil.c for dlil_output=>(*proto)->dl_pre_output=> 
@@ -209,10 +211,10 @@ inet_firewire_pre_output(
 ////////////////////////////////////////////////////////////////////////////////
 static errno_t
 firewire_inet_prmod_ioctl(
-    ifnet_t						ifp,
+    __unused ifnet_t			ifp,
     __unused protocol_family_t	protocol_family,
-    u_int32_t					command,
-    void*						data)
+    __unused unsigned long		command,
+    __unused void*				data)
 {
     return EOPNOTSUPP;
 }
@@ -260,7 +262,7 @@ firewire_inet_resolve_multi(
 //
 ////////////////////////////////////////////////////////////////////////////////
 int
-firewire_attach_inet(ifnet_t ifp, u_long protocol_family)
+firewire_attach_inet(ifnet_t ifp, protocol_family_t protocol_family)
 {
 	struct ifnet_attach_proto_param	proto;
 	struct ifnet_demux_desc demux[2];
@@ -294,16 +296,4 @@ firewire_attach_inet(ifnet_t ifp, u_long protocol_family)
 	}
 	
 	return error;
-}
-
-int
-firewire_detach_inet(
-	struct ifnet *ifp,
-	u_long proto_family)
-{
-    int         stat;
-
-	stat = dlil_detach_protocol(ifp, proto_family);
-
-    return stat;
 }

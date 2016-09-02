@@ -74,14 +74,9 @@
 #include <netinet/in_systm.h>
 #include <netinet/ip.h>
 
-#define INET6 1
-
-#if INET6
 #include <netinet6/in6_var.h>
-#include <netinet6/ip6_var.h>
 #include <netinet6/nd6.h>
 #include <netinet6/in6_ifattach.h>
-#endif
 
 #include <sys/socketvar.h>
 
@@ -118,12 +113,17 @@ inet6_firewire_input(
     if (eh->fw_dhost[0] & 1) 
 	{
 		int flags = (bcmp((caddr_t)fwbroadcastaddr, (caddr_t)eh->fw_dhost, sizeof(fwbroadcastaddr)) == 0) 
-					? M_BCAST : M_MCAST;
+					? MBUF_BCAST : MBUF_MCAST;
 			
 		mbuf_setflags(m, mbuf_flags(m) | flags);	
     }
 	
-	return proto_input(PF_INET6, (struct __mbuf*)m);
+	errno_t ret = proto_input(PF_INET6, (struct __mbuf*)m);
+	
+	if( ret )
+		mbuf_freem(m);
+	
+	return ret;
 }
 
 
@@ -142,7 +142,7 @@ inet6_firewire_pre_output(
 	errno_t	result;
 	struct	sockaddr_dl	sdl;
 	
-    mbuf_setflags(*m0, mbuf_flags(*m0) | M_LOOP);
+    mbuf_setflags(*m0, mbuf_flags(*m0) | MBUF_LOOP);
 	
 	result = nd6_lookup_ipv6(ifp, (const struct sockaddr_in6*)dst_netaddr,
 							 &sdl, sizeof(sdl), (route_t)route, *m0);
@@ -183,6 +183,7 @@ firewire_inet6_resolve_multi(
 	out_ll->sdl_nlen = 0;
 	out_ll->sdl_alen = FIREWIRE_ADDR_LEN;
 	out_ll->sdl_slen = 0;
+ 	
 	FIREWIRE_MAP_IPV6_MULTICAST(&sin6->sin6_addr, LLADDR(out_ll));
 	
 	return 0;
@@ -190,36 +191,18 @@ firewire_inet6_resolve_multi(
 
 errno_t
 firewire_inet6_prmod_ioctl(
-						ifnet_t				ifp,
-						protocol_family_t	protocol_family,
-						u_int32_t			command,
-						void				*data)
+						__unused ifnet_t			ifp,
+						__unused protocol_family_t	protocol_family,
+						__unused unsigned long		command,
+						__unused void				*data)
 {
-    struct ifreq *ifr = (struct ifreq *) data;
-    int			error = 0;
-
-    switch (command) 
-	{
-		case SIOCGIFADDR:
-			{
-				struct sockaddr *sa;
-
-				sa = (struct sockaddr *) & ifr->ifr_data;
-				ifnet_lladdr_copy_bytes(ifp, sa->sa_data, FIREWIRE_ADDR_LEN);
-			}
-			break;
-			
-		default:
-			return EOPNOTSUPP;
-	}
-
-	return (error);
+	return EOPNOTSUPP;
 }
 
 int
 firewire_attach_inet6(
 	ifnet_t ifp,
-	__unused u_long	protocol_family)
+	__unused protocol_family_t	protocol_family)
 {
 	struct ifnet_attach_proto_param	proto;
 	struct ifnet_demux_desc demux[1];
@@ -241,26 +224,9 @@ firewire_attach_inet6(
 	
 	if (error && error != EEXIST) 
 	{
-		printf("WARNING: ether_attach_inet6 can't attach ipv6 to %s%d\n",
-						ifnet_name(ifp), ifnet_unit(ifp));
+		printf("WARNING: firewire_attach_inet6 can't attach ipv6 to %s%d\n",
+												ifnet_name(ifp), ifnet_unit(ifp));
 	}
 	
 	return error;
-}
-
-int
-firewire_detach_inet6(
-	ifnet_t			ifp,
-	u_long			protocol_family)
-{
-    errno_t         error;
-
-	error = ifnet_detach_protocol(ifp, protocol_family);
-	if (error && error != ENOENT) 
-	{
-		printf("WARNING: ether_detach_inet6 can't detach ipv6 from %s%d\n",
-						ifnet_name(ifp), ifnet_unit(ifp));
-	}
-
-    return error;
 }
